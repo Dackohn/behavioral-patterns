@@ -1,299 +1,230 @@
-# Structural Design Patterns
+# Behavioral Design Patterns
 
-## **Patterns Implemented:**
+### *Implementation Report*
 
-* Decorator
-* Adapter
-* Facade
+This report describes the implementation of three behavioral design patterns inside the **Support Ticket Management System**:
 
----
+* **Chain of Responsibility**
+* **State**
+* **Template Method** (optional but included as a complementary behavioral pattern)
 
-## 1. Introduction
-
-This project extends an existing support ticket management system with **three classic structural design patterns**. These patterns increase flexibility, improve extensibility, and decouple components without modifying the existing business logic.
-
-The system initially contained:
-
-* Customer and ticket models
-* Repositories (in-memory)
-* Logging
-* Notification channels (Email, SMS, Push)
-* CustomerService and TicketService
-* A simple CLI interface
-
-To fulfill the laboratory requirements, three structural patterns were added:
-
-1. **Decorator Pattern** — Enhancing the logging mechanism
-2. **Adapter Pattern** — Integrating an external chat notification API
-3. **Facade Pattern** — Simplifying common workflows for clients
-
-The following sections describe each pattern, their purpose, implementation details, and usage inside the project.
+Each pattern provides a different behavioral mechanism that improves flexibility, extensibility, and decoupling inside the system.
 
 ---
 
-# 2. Decorator Pattern
+## 1. Chain of Responsibility Pattern
 
-## 2.1. Intent
+### **Purpose**
 
-The **Decorator pattern** allows behavior to be added to an object dynamically, without modifying its original class.
-This is used when we want to wrap an existing object with additional responsibilities.
+The **Chain of Responsibility (CoR)** pattern allows a request to be processed by a pipeline of handlers, where each handler may approve, reject, or pass the request further.
+It decouples request senders from receivers and supports dynamic extension of validation logic.
 
-**Why here?**
-The system already had a `ConsoleLogger` implementing `ILogger`. We wanted:
+### **Why CoR fits the system**
 
-* to add timestamps to log messages,
-* **without modifying ConsoleLogger**,
-* and without changing any existing service that uses ILogger.
+Ticket creation in any support system must go through **multiple validation steps**, such as:
 
-The Decorator perfectly fits this use case.
+* verifying the customer exists
+* checking the description validity
+* validating priority rules
 
----
+Hard-coding all validation steps inside `TicketService` would create a monolithic and rigid function.
 
-## 2.2. Implementation Overview
+CoR allows each validation rule to be:
 
-### **Component Interface**
-
-```cpp
-class ILogger {
-public:
-    virtual ~ILogger() = default;
-    virtual void log(const std::string& message) = 0;
-};
-```
-
-### **Concrete Component**
-
-```cpp
-class ConsoleLogger : public ILogger {
-public:
-    void log(const std::string& msg) override;
-};
-```
-
-### **Decorator Base Class**
-
-```cpp
-class LoggerDecorator : public ILogger {
-protected:
-    std::shared_ptr<ILogger> inner;
-public:
-    explicit LoggerDecorator(std::shared_ptr<ILogger> logger);
-    void log(const std::string& msg) override;
-};
-```
-
-### **Concrete Decorator: TimestampLogger**
-
-```cpp
-class TimestampLogger : public LoggerDecorator {
-public:
-    TimestampLogger(std::shared_ptr<ILogger> logger);
-    void log(const std::string& message) override;
-};
-```
-
-### **Decorator Usage (main.cpp)**
-
-```cpp
-auto baseLogger = std::make_shared<ConsoleLogger>();
-auto logger     = std::make_shared<TimestampLogger>(baseLogger);
-```
-
-All domain services now automatically use timestamped logging **without any code changes to services or loggers**.
+* independent
+* reusable
+* replaceable
+* easily extendable
+* executed in sequence only if previous ones succeed
 
 ---
 
-## 2.3. Benefits in This Project
+## **Implementation Summary**
 
-* Logging improved without modifying existing components
-* Multiple decorators could be easily chained (file logger, color logger, etc.)
-* Services remain unaware of logging enhancements
-* Open for extension, closed for modification (SOLID: OCP)
+### **Core classes**
 
----
+The CoR implementation consists of:
 
-# 3. Adapter Pattern
+| File                            | Description                                          |
+| ------------------------------- | ---------------------------------------------------- |
+| `ITicketHandler.hpp`            | Abstract handler defining `handle()` and `process()` |
+| `TicketCreationRequest.hpp`     | DTO for collecting validation info                   |
+| `CustomerExistsHandler.hpp`     | Validates customer existence                         |
+| `DescriptionLengthHandler.hpp`  | Ensures description has a minimum length             |
+| `PriorityValidationHandler.hpp` | Validates rules tied to high/critical priority       |
 
-## 3.1. Intent
+### **Chain Creation**
 
-The **Adapter pattern** converts the interface of a class into another interface clients expect.
-
-This is used when:
-
-* We need to integrate a **third-party** component
-* The third-party API **does not follow our internal interface**
-* Changing existing interfaces is undesirable
-
-**Why here?**
-The system has its own `INotificationChannel` interface.
-We added a simulated 3rd-party chat API:
+The CLI constructs a validation pipeline:
 
 ```cpp
-class ExternalChatAPI {
-public:
-    void postToChannel(const std::string& channelId, const std::string& text);
-};
+auto customerHandler = std::make_shared<CustomerExistsHandler>(*customerService);
+auto lengthHandler   = std::make_shared<DescriptionLengthHandler>(10);
+auto priorityHandler = std::make_shared<PriorityValidationHandler>();
+
+customerHandler->setNext(lengthHandler);
+lengthHandler->setNext(priorityHandler);
+
+customerHandler->handle(req);
 ```
 
-This API is incompatible with the internal notification system.
+### **Result of the Chain**
+
+* If any handler sets `req.valid = false`, the entire chain stops.
+* The user receives detailed feedback.
+* If all handlers approve the request, the ticket is created.
+
+### **Benefits Provided**
+
+* modular validation
+* no duplicated code
+* extensible pipeline
+* each validation rule is isolated
 
 ---
 
-## 3.2. Implementation Overview
+## 2. State Pattern
 
-### **Target Interface**
+### **Purpose**
+
+The **State Pattern** allows an object to change its behavior dynamically when its internal state changes.
+Instead of using `if/else` or `switch` statements to represent ticket status transitions, each state becomes its own class.
+
+### **Why State fits the system**
+
+Support tickets naturally move through well-defined stages:
+
+```
+OPEN → IN_PROGRESS → RESOLVED → CLOSED
+           ↘ reopen ↗         ↖ reopen
+```
+
+Embedding these rules directly in `TicketService` becomes difficult as logic grows.
+
+The State pattern provides:
+
+* encapsulated transition logic
+* clear, maintainable state machines
+* ability to change or extend statuses without modifying existing code
+* elimination of complex conditionals
+
+---
+
+## **Implementation Summary**
+
+### **Core Classes:**
+
+| File                     | Description                                                      |
+| ------------------------ | ---------------------------------------------------------------- |
+| `ITicketState.hpp`       | Base interface for all states                                    |
+| `TicketStateMachine.hpp` | Holds the current state and transitions                          |
+| `TicketStates.hpp`       | Contains: OpenState, InProgressState, ResolvedState, ClosedState |
+
+Each state implements allowed transitions:
+
+Example:
 
 ```cpp
-class INotificationChannel {
-public:
-    virtual bool send(const std::string& recipient,
-                      const std::string& message) = 0;
-    virtual std::string getChannelName() const = 0;
-};
+void InProgressState::resolve(TicketStateMachine& ctx) {
+    ctx.setState(std::make_shared<ResolvedState>());
+}
 ```
 
-### **Adaptee (External API)**
+### **State Machine Usage**
+
+The CLI provides:
 
 ```cpp
-class ExternalChatAPI {
-public:
-    void postToChannel(const std::string& channelId,
-                       const std::string& text);
-};
+auto state = std::make_shared<OpenState>();
+TicketStateMachine sm(state);
+
+sm.startProgress();
+sm.resolve();
+sm.close();
+sm.reopen();
 ```
 
-### **Adapter**
+### **Integration with Ticket Model**
+
+`Ticket.hpp` contains:
 
 ```cpp
-class ChatNotificationAdapter : public INotificationChannel {
-private:
-    std::shared_ptr<ExternalChatAPI> api;
-
-public:
-    ChatNotificationAdapter();
-    bool send(const std::string& recipient, const std::string& msg) override;
-    std::string getChannelName() const override;
-};
+void applyStateMachine(TicketStateMachine& sm) {
+    status = sm.getStatus();
+}
 ```
 
-### **Adapter Usage**
+This allows the state machine to drive real system logic.
 
-The adapter is added into the notification system:
+### **Benefits Provided**
+
+* separation of concerns
+* prevents invalid state transitions
+* easy to modify workflow logic
+* matches real-world ticket lifecycle behavior
+
+---
+
+## 3. Template Method Pattern
+
+### **Purpose**
+
+The Template Method defines the **skeleton of an algorithm**, while allowing concrete steps to be overridden by subclasses.
+
+### **Why Template Method fits the system**
+
+Although not exposed directly in user-facing code, the system internally uses a **template-like workflow** for ticket creation inside factories and builders:
+
+* All tickets must be constructed with:
+
+  * an ID
+  * customer reference
+  * description
+  * metadata (priority, category)
+* Additional optional metadata (tags, assignment, timestamps) follow a standard build process.
+
+This build sequence is fixed, but certain steps (tagging, assignment) can differ for different ticket types or future extensions.
+
+### **Implementation Summary**
+
+#### **TicketBuilder.hpp**
 
 ```cpp
-notifier.addChannel(std::make_shared<ChatNotificationAdapter>());
+auto ticket = std::make_shared<Ticket>(id, customerId, description, priority, category);
+if (!assignedTo.empty()) ticket->setAssignedTo(assignedTo);
+for (const auto& t : tags) ticket->addTag(t);
 ```
 
-Now the system treats the external API just like any other notification channel (Email, SMS, Push), without any code changes to existing components.
+This acts as template method:
+
+1. **Create ticket base**
+2. **Apply optional assignments**
+3. **Apply optional tags**
+
+The algorithm is fixed, but the optional steps are variable.
+
+### **Benefits Provided**
+
+* consistent building process
+* flexible extension of ticket creation rules
+* avoids repeating logic in services or factories
+* supports future specialized ticket types (billing ticket, security ticket, etc.)
 
 ---
 
-## 3.3. Benefits in This Project
+## Conclusion
 
-* Clean integration of an external API
-* NotificationService needs no modifications
-* Follows the “program to interface” principle
-* New alternative channels can be easily added (Slack, Discord, WhatsApp…)
+The integration of these three behavioral patterns greatly improves the maintainability and flexibility of the support ticket system.
 
----
+| Pattern                 | Problem Solved                    | Benefit                           |
+| ----------------------- | --------------------------------- | --------------------------------- |
+| Chain of Responsibility | Complex, growing validation rules | Modular validation pipeline       |
+| State                   | Hard-coded ticket workflow logic  | Clean, scalable state transitions |
+| Template Method         | Repeated construction steps       | Extensible building workflow      |
 
-# 4. Facade Pattern
+As the system grows—new ticket types, complex validation, workflow automation—these behavioral patterns ensure the architecture remains:
 
-## 4.1. Intent
-
-The **Facade pattern** provides a simplified API over a set of complex subsystems.
-
-In our system, registering a customer and opening a support ticket requires interacting with:
-
-* `CustomerService`
-* `TicketService`
-* `NotificationService`
-
-A CLI or UI should **not** need to know this complexity.
-
----
-
-## 4.2. Implementation Overview
-
-### **Facade Class**
-
-```cpp
-class SupportFacade {
-private:
-    std::shared_ptr<CustomerService> customerService;
-    std::shared_ptr<TicketService> ticketService;
-    NotificationService& notifier;
-
-public:
-    std::pair<std::string, std::string> registerCustomerAndOpenTicket(
-        const std::string& name,
-        const std::string& email,
-        const std::string& phone,
-        const std::string& issueDescription,
-        Priority priority,
-        TicketCategory category
-    );
-};
-```
-
-### **Workflow Provided**
-
-1. Register customer
-2. Create ticket
-3. Notify customer
-
-The CLI only calls:
-
-```cpp
-facade.registerCustomerAndOpenTicket(...);
-```
-
-instead of interacting with three different services.
-
----
-
-## 4.3. Usage Example (CLI)
-
-Menu option:
-
-```
-3. Register customer + create ticket (Facade)
-```
-
-Triggers:
-
-```cpp
-auto [customerId, ticketId] = facade.registerCustomerAndOpenTicket(...);
-```
-
----
-
-## 4.4. Benefits for This Project
-
-* Simplifies CLI logic
-* Encapsulates multi-step workflows in one place
-* Supports future UI layers (web, desktop, REST API)
-* Reduces coupling between client code and business logic
-
----
-
-# 5. Summary Table
-
-| Pattern       | Purpose                                         | Implementation Location   | System Benefit                                      |
-| ------------- | ----------------------------------------------- | ------------------------- | --------------------------------------------------- |
-| **Decorator** | Add responsibilities dynamically                | `TimestampLogger`         | Improved logging without modifying services         |
-| **Adapter**   | Convert external API to internal interface      | `ChatNotificationAdapter` | Seamless integration of external chat notifications |
-| **Facade**    | Simplify subsystem usage with unified interface | `SupportFacade`           | Cleaner, simpler CLI & easier workflows             |
-
----
-
-# 6. Conclusion
-
-By implementing **three structural design patterns**, the system became:
-
-* more modular
-* easier to extend
-* easier to integrate with external systems
-* decoupled and aligned with SOLID principles
-
-These patterns demonstrate clear, practical improvements in real-world software architecture and provide a strong foundation for future enhancements such as GUI/REST APIs, additional notification channels, or advanced logging systems.
+* maintainable
+* extensible
+* modular
+* aligned with real-world support systems
